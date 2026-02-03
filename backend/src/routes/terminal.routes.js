@@ -1,7 +1,8 @@
 const express = require("express");
 
-// docker อยู่นอก src
+// นำเข้าตัวรันคำสั่ง Docker (ที่เขียนไว้ใน dockerExecutor.js)
 const executeDocker = require("../../docker/dockerExecutor");
+// นำเข้าตัวจัดการ Lifecycle ของ Container (สร้าง/ลบ/รีเซ็ต)
 const {
   ensureContainer,
   resetContainer
@@ -17,13 +18,23 @@ const {
 
 const router = express.Router();
 
-/* =========================
-   POST : Execute command
-   ========================= */
+/**
+ * Module Terminal Routes
+ * จัดการลอจิกทั้งหมดของ Terminal:
+ * 1. รับคำสั่งจากหน้าเว็บ
+ * 2. ส่งไปรันใน Docker
+ * 3. ตรวจสอบว่าคำสั่งถูกต้องตามโจทย์ไหม
+ * 4. บันทึกความคืบหน้า (Progress)
+ */
+
+/* ==================================================
+   API: รันคำสั่ง Linux (Execute Command)
+   POST /api/terminal/execute
+   ================================================== */
 router.post("/execute", async (req, res) => {
   const { command, userId, trackId = 1 } = req.body;
 
-  // ตัดช่องว่างหน้าหลังออกก่อนนำไปใช้
+  // ตัดช่องว่างหน้าหลังออกก่อนนำไปใช้ กัน User พิมพ์เว้นวรรคเกิน
   const inputCmd = command ? command.trim() : "";
 
   if (!userId || !inputCmd) {
@@ -33,49 +44,48 @@ router.post("/execute", async (req, res) => {
   }
 
   try {
-    // 1️⃣ หา user
+    // 1 User Check มี User นี้จริงไหม
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    // 2️⃣ ensure docker container
-    // (เช็คว่า User มี Container หรือยัง ถ้ายังให้สร้าง ถ้ามีแล้วให้ Start)
+    // 2 Docker Provisioning "มีเครื่องให้รันไหม?"
+    // เรียก ensureContainer เพื่อเช็คว่า User มี Container หรือยัง
+    // - ถ้ายัง -> สร้างใหม่
+    // - ถ้ามีแต่ Stop อยู่ -> Start ให้
     const containerName = await ensureContainer(userId);
 
-    // อัปเดตชื่อ Container ลง DB ถ้ามีการเปลี่ยนแปลง
+    //ถ้าชื่อ Container เปลี่ยนไป (เช่น ถูกรีเซ็ต) ให้อัปเดตลง DB ให้ตรงกัน
     if (user.container_name !== containerName) {
       await User.updateContainer(userId, containerName);
     }
 
-    // 3️⃣ โหลด lessons ตาม track
-    // (เรียงตามลำดับ order เพื่อความชัวร์)
+    // 3 Load Context "ตอนนี้ User อยู่บทเรียนไหน?"
+    // 3.1 เตรียมบทเรียนทั้งหมดใน Track นี้ เรียงตามลำดับ 1, 2, 3...
     const lessonList = lessons
       .filter(l => l.trackId == trackId)
       .sort((a, b) => a.order - b.order);
 
     if (lessonList.length === 0) {
-      return res.status(404).json({
-        error: "No lessons for this track"
-      });
+      return res.status(404).json({ error: "No lessons for this track" });
     }
 
-    // 4️⃣ โหลด progress จาก DB
+    // 3.2 ดึง Progress ล่าสุดจาก DB
     let progress = await getProgress(userId, trackId);
 
+    // ถ้ายังไม่เคยเรียน Track นี้เลย -> สร้าง Progress เริ่มต้น (บทที่ 0)
     if (!progress) {
       await createProgress(userId, trackId);
       progress = { current_lesson_index: 0 };
     }
 
-    // แปลง index ให้เป็นตัวเลข (ป้องกันบั๊ก string)
-    // หมายเหตุ: เช็คชื่อ Field ใน DB ด้วยว่าเป็น current_lesson หรือ current_lesson_index
-    // (ในโค้ดนี้ผมอิงตาม progress.model ที่น่าจะ return current_lesson_index)
+    // แปลง index ให้เป็นตัวเลข (กันเหนียว)
     const lessonIndex = Number(progress.current_lesson_index || progress.current_lesson || 0);
 
-    // ✅ เรียนครบแล้ว
+    // Case: เรียนจบ Track แล้ว (Complete)
     if (lessonIndex >= lessonList.length) {
-      // Execute เล่นๆ ได้ แต่ไม่บันทึก Progress เพิ่ม
+      // ให้ User พิมพ์เล่นต่อได้ แต่ไม่ต้องตรวจคำตอบ/ไม่ต้องบันทึกเพิ่ม
       const output = await executeDocker(inputCmd, containerName);
       return res.json({
         output,
@@ -87,48 +97,50 @@ router.post("/execute", async (req, res) => {
       });
     }
 
+    // ดึงโจทย์ของ "บทปัจจุบัน" ออกมา
     const currentLesson = lessonList[lessonIndex];
 
-    // 5️⃣ execute command (รันจริงใน Docker เพื่อเอาผลลัพธ์มาโชว์)
+    // 4 Execution: "รันคำสั่งจริง"
+    // ส่งคำสั่งไปรันใน Linux Container ผ่าน Docker API แล้วรอผลลัพธ์ (stdout/stderr)
     const output = await executeDocker(inputCmd, containerName);
 
-    // 6️⃣ ตรวจคำตอบ (Validation Logic)
+    // 5 Grading Logic: "ตรวจคำตอบ" 
     let pass = false;
     
+    // ถ้าบทเรียนนี้มีเงื่อนไขการตรวจ (property 'check')
     if (currentLesson && currentLesson.check) {
       try {
-        // ✅ แปลง String จาก lessons.js เป็น Regex Object
-        // flag 'i' = case insensitive (ไม่สนตัวพิมพ์เล็กใหญ่)
         const regex = new RegExp(currentLesson.check, "i");
         
-        // ✅ ตรวจสอบที่ "Input Command" (สิ่งที่ User พิมพ์)
-        // เพราะ Regex เราเขียนไว้ดัก input เช่น "^mkdir .+"
+        // ตรวจสอบที่ "Input Command" (สิ่งที่ User พิมพ์)
+        // ว่าตรงกับ Pattern ที่โจทย์กำหนดไหม
         pass = regex.test(inputCmd);
 
       } catch (e) {
         console.error("Regex Check Error:", e);
-        pass = false; // ถ้า Regex พัง ให้ถือว่าไม่ผ่านไว้ก่อน
+        pass = false; // ถ้า Regex พัง หรือเขียนผิด ให้ถือว่าไม่ผ่านไว้ก่อน
       }
     } else {
-      // ถ้าไม่มี check (เช่น บทเรียนให้อ่านเฉยๆ) ให้ถือว่าผ่านเลยถ้าพิมพ์อะไรมาก็ได้
+      // ถ้าไม่มีเงื่อนไข check (เช่น บทเรียนให้อ่านเฉยๆ หรือให้ลองเล่นฟรีสไตล์)
+      // ให้ถือว่าผ่านทันทีที่กด Enter
       pass = true;
     }
 
-    // 7️⃣ ถ้าผ่าน → update progress ลง DB
+    // 6 "ถ้าผ่าน ให้เลื่อนไปบทต่อไป"
     if (pass) {
       await updateProgress(
         userId,
         trackId,
-        lessonIndex + 1
+        lessonIndex + 1 // บวก 1 เพื่อไปบทถัดไป
       );
     }
 
-    // ส่งผลลัพธ์กลับ Frontend
+    // 7 Response: ส่งผลกลับไปให้ Frontend
     res.json({
-      output, // ผลที่ได้จากการรันใน Docker
-      pass,   // ผ่านหรือไม่
+      output, // ผลที่ได้จากการรันใน Docker (เช่น "Directory created")
+      pass,   // ผ่านหรือไม่ (Frontend จะเอาไปโชว์ไฟเขียว/แดง)
       progress: {
-        current: pass ? lessonIndex + 1 : lessonIndex,
+        current: pass ? lessonIndex + 1 : lessonIndex, // ถ้าผ่านก็ส่ง index ใหม่กลับไปเลย
         total: lessonList.length
       }
     });
@@ -139,9 +151,10 @@ router.post("/execute", async (req, res) => {
   }
 });
 
-/* =========================
-   GET : Load progress
-   ========================= */
+/* ==================================================
+   API: ดึงสถานะการเรียนล่าสุด (Get Progress)
+   GET /api/terminal/progress/:userId/:trackId
+   ================================================== */
 router.get(
   "/progress/:userId/:trackId",
   async (req, res) => {
@@ -154,7 +167,7 @@ router.get(
 
       const progress = await getProgress(userId, trackId);
       
-      // Map field ให้ตรงกับ Frontend
+      // Map field ให้ตรงกับ Frontend (current, total)
       const currentIndex = progress 
         ? Number(progress.current_lesson_index || progress.current_lesson || 0)
         : 0;
@@ -170,19 +183,22 @@ router.get(
   }
 );
 
-/* =========================
-   POST : Reset progress + container
-   ========================= */
+/* ==================================================
+   API: เริ่มเรียนใหม่ (Reset Course)
+   POST /api/terminal/reset/:userId/:trackId
+   Concept: รีเซ็ต DB + ลบไฟล์ใน Docker ทิ้ง
+   ================================================== */
 router.post(
   "/reset/:userId/:trackId",
   async (req, res) => {
     try {
       const { userId, trackId } = req.params;
 
-      // รีเซ็ต Progress เป็น 0
+      // 1. รีเซ็ต Progress ใน Database กลับเป็น 0
       await updateProgress(userId, trackId, 0);
       
-      // ลบ/รีเซ็ต Container ด้วยเพื่อให้ไฟล์หายไป เริ่มใหม่หมด
+      // 2. Container ทิ้งแล้วสร้างใหม่
+      // เพื่อให้ไฟล์ที่ User เคยสร้างไว้หายไปจริงๆ
       await resetContainer(userId);
 
       console.log(

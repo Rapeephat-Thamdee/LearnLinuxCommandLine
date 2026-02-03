@@ -1,4 +1,3 @@
-// backend/src/data/quizzes.js
 
 module.exports = [
   // ==========================================

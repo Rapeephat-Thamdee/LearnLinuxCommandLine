@@ -23,7 +23,7 @@ const routes = [
   { path: "/track", component: TrackDetail },
   { path: "/lesson", component: Lesson },
   { path: "/quiz", component: Quiz },
-  { path: "/profile", component: Profile }, // ✅ เพิ่ม Route นี้เพื่อให้เข้าหน้าโปรไฟล์ได้
+  { path: "/profile", component: Profile },
 
   // --- Admin Zone ---
   { 
@@ -53,7 +53,7 @@ const router = createRouter({
 router.beforeEach((to, from, next) => {
   const token = localStorage.getItem("token");
   
-  // ✅ ใช้ try-catch เพื่อป้องกันเว็บขาว ถ้าข้อมูลในเครื่องพัง
+  //ใช้ try-catch เพื่อป้องกันเว็บขาว ถ้าข้อมูลในเครื่องพัง
   let user = null;
   try {
     const userStr = localStorage.getItem("user");
@@ -79,7 +79,7 @@ router.beforeEach((to, from, next) => {
   // 3. เช็คสิทธิ์ Admin
   if (to.meta.requiresAdmin) {
     if (!user || user.role !== 'admin') {
-      alert("⛔ คุณไม่มีสิทธิ์เข้าถึงหน้านี้!"); 
+      alert("คุณไม่มีสิทธิ์เข้าถึงหน้านี้!"); 
       return next("/tracks"); 
     }
   }

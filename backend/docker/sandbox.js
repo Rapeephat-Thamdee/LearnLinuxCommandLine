@@ -1,14 +1,14 @@
-// คำสั่งที่ "อนุญาต" (อัปเดตให้ครบตามบทเรียน Track 1-3)
+// คำสั่งที่ "อนุญาต"
 const ALLOWED_COMMANDS = [
-  // Track 1: Beginner
+  // Track 1 Beginner
   "pwd", "ls", "cd", "mkdir", "touch", 
   "cp", "mv", "rm", "clear", "man",
   
-  // Track 2: Intermediate
+  // Track 2 Intermediate
   "cat", "less", "head", "tail", "grep", 
   "find", "echo", "wc", "sort",
   
-  // Track 3: Advanced
+  // Track 3 Advanced
   "chmod", "chown", "ps", "top", "kill", 
   "tar", "df", "du", "ping", "curl", "wget", "alias",
   
@@ -16,7 +16,7 @@ const ALLOWED_COMMANDS = [
   "whoami", "date", "history"
 ];
 
-// คำสั่งที่ "ห้ามเด็ดขาด" (เอาคำสั่งที่ต้องเรียนออกแล้ว)
+// คำสั่งที่ "ห้ามเด็ดขาด"
 const BLOCKED_KEYWORDS = [
   "shutdown",
   "reboot",

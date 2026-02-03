@@ -1,26 +1,32 @@
 const express = require("express");
 const db = require("../db");
-// นำเข้าฟังก์ชันสำหรับลบ Container (สมมติว่าคุณมีฟังก์ชันนี้ใน containerManager)
+// นำเข้าฟังก์ชันสำหรับลบ Container
 const { removeContainer } = require("../../docker/containerManager"); 
 
 const router = express.Router();
 
-/* =========================
-   GET : ผู้ใช้ทั้งหมด + ค้นหา
+/**
+ * Admin Routes
+ * จัดการข้อมูล User สำหรับผู้ดูแลระบบ (Admin Dashboard)
+ * - ดูรายชื่อ, ค้นหา, ดูรายละเอียด, และลบ User
+ */
+
+/* ==================================================
+   1. API ดึงรายชื่อผู้ใช้ทั้งหมด (รองรับการค้นหา)
    GET /api/admin/users?search=abc
-   ========================= */
+   ================================================== */
 router.get("/users", async (req, res) => {
   const { search } = req.query;
 
   try {
-    // ⚠️ แก้ไข: เปลี่ยน name -> username และเพิ่ม role
+    // เตรียม SQL พื้นฐาน ดึงข้อมูลที่จำเป็นแสดงในตาราง (ไม่เอา password)
     let sql = "SELECT id, username, email, role, container_name FROM users";
     let params = [];
 
-    // เพิ่มเงื่อนไขการค้นหา
+    // Search Logic ถ้ามี search param ส่งมา ให้ต่อ SQL ด้วย WHERE LIKE ใช้ OR เพื่อให้ค้นหาได้ทั้งจาก username หรือ email
     if (search) {
       sql += " WHERE username LIKE ? OR email LIKE ?";
-      params.push(`%${search}%`, `%${search}%`);
+      params.push(`%${search}%`, `%${search}%`); // ใส่ % หน้าหลังเพื่อค้นหาบางส่วนของคำ
     }
 
     const [rows] = await db.execute(sql, params);
@@ -31,15 +37,17 @@ router.get("/users", async (req, res) => {
   }
 });
 
-/* =========================
-   GET : ข้อมูลผู้ใช้รายคน + ประวัติคะแนน
+/* ==================================================
+   2. API ดูรายละเอียดเจาะลึกรายบุคคล (User Detail)
    GET /api/admin/users/:id
-   ========================= */
+   ================================================== */
 router.get("/users/:id", async (req, res) => {
   const { id } = req.params;
 
   try {
-    // ⚠️ แก้ไข: เปลี่ยน name -> username
+    // Step 1 ดึงข้อมูลส่วนตัว (User Profile)
+    // ใช้ destructuring [[user]] เพราะ db.execute คืนค่าเป็น [[row1, row2], fields]
+    // เราต้องการแค่ row แรกสุด
     const [[user]] = await db.execute(
       "SELECT id, username, email, role, container_name FROM users WHERE id = ?",
       [id]
@@ -49,7 +57,7 @@ router.get("/users/:id", async (req, res) => {
       return res.status(404).json({ error: "User not found" });
     }
 
-    // ดึงคะแนน (Quiz Results)
+    // Step 2 ดึงประวัติการเรียน/คะแนนสอบ ใช้ MAX(score) และ GROUP BY เพื่อหาคะแนนที่ดีที่สุดในแต่ละ Track/Difficulty
     const [results] = await db.execute(
       `SELECT track_id, difficulty, MAX(score) AS bestScore
        FROM quiz_results
@@ -58,6 +66,7 @@ router.get("/users/:id", async (req, res) => {
       [id]
     );
 
+    // ส่งคืนทั้งข้อมูล user และ results กลับไปใน object เดียว
     res.json({ user, results });
   } catch (err) {
     console.error("GET USER DETAIL ERROR:", err);
@@ -65,35 +74,36 @@ router.get("/users/:id", async (req, res) => {
   }
 });
 
-/* =========================
-   DELETE : ลบผู้ใช้ (ลบ Docker + DB)
+/* ==================================================
+   3. API ลบผู้ใช้ถาวร
    DELETE /api/admin/users/:id
-   ========================= */
+   Concept: ลบ Docker Container -> ลบข้อมูลประกอบ -> ลบ User
+   ================================================== */
 router.delete("/users/:id", async (req, res) => {
   const { id } = req.params;
 
   try {
-    // 1. ค้นหา User ก่อนเพื่อเอาชื่อ Container
+    // 1 ค้นหา User ก่อนเพื่อเอาชื่อ Container
     const [[user]] = await db.execute("SELECT container_name FROM users WHERE id = ?", [id]);
-    
+
+    // ถ้า User มี Container รันค้างอยู่
     if (user && user.container_name) {
-        // 🐳 2. ลบ Container ของ User คนนั้นทิ้ง (ถ้ามี)
+        // 2 สั่งลบ Container
         try {
-            // ต้องแน่ใจว่า import ฟังก์ชัน removeContainer มาแล้ว
-            // หรือถ้าไม่มีฟังก์ชันนี้ ให้ข้ามไปก่อน
+            // ตรวจสอบว่าฟังก์ชัน removeContainer มีอยู่จริงและเรียกใช้งานได้
              if (typeof removeContainer === 'function') {
                  await removeContainer(user.container_name);
              }
         } catch (dockerErr) {
-            console.error("Docker remove failed:", dockerErr);
-            // ไม่ return error เพราะเรายังอยากลบข้อมูลใน DB ต่อ
+            console.error("Docker remove failed:", dockerErr); 
         }
     }
 
-    // 3. ลบข้อมูลใน Database (เรียงลำดับ Foreign Key)
+    // 3 ลบข้อมูลตามลำดับ Foreign Key
+    // ต้องลบตารางลูก (quiz_results, progress) ก่อนลบตารางแม่ (users)
     await db.execute("DELETE FROM quiz_results WHERE user_id = ?", [id]);
     await db.execute("DELETE FROM progress WHERE user_id = ?", [id]);
-    await db.execute("DELETE FROM users WHERE id = ?", [id]);
+    await db.execute("DELETE FROM users WHERE id = ?", [id]);// สุดท้ายค่อยลบ User ออกจากระบบ
 
     res.json({ ok: true });
   } catch (err) {

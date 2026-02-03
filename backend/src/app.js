@@ -20,7 +20,7 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ✅ แก้ไขตรงนี้: ลบ .. ออก เพื่อให้มองหาโฟลเดอร์ uploads ที่อยู่ใน src เหมือนกัน
+
 app.use("/uploads", express.static(path.join(__dirname, "uploads"))); 
 
 // Logger

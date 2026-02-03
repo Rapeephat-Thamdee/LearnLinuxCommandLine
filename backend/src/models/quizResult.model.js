@@ -1,9 +1,7 @@
 const db = require("../db");
 
-/**
- * บันทึกผลสอบ
- * ❌ ไม่เก็บ percent ใน DB
- */
+//บันทึกผลสอบ
+
 exports.createResult = (
   userId,
   trackId,
@@ -29,7 +27,6 @@ exports.createResult = (
 
 /**
  * ดึงผลสอบล่าสุด
- * ✅ คำนวณ percent ตอนส่งออก
  */
 exports.getLatestResult = async (userId, trackId) => {
   const [rows] = await db.execute(
